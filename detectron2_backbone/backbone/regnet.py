@@ -1,3 +1,10 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+# --------------------------------------------------------
+# Descripttion: detectron2 RegNet backbone
+# version: 0.0.1
+# --------------------------------------------------------
+
 import torch
 from torch import nn
 from torch.nn import BatchNorm2d
@@ -11,60 +18,58 @@ from detectron2.modeling.backbone.fpn import LastLevelMaxPool, LastLevelP6P7
 from torchvision import models
 
 __all__ = [
-    "ShuffleNetV2",
-    "build_shufflenet_v2_backbone",
-    "build_shufflenet_v2_fpn_backbone",
-    "build_fcos_shufflenet_v2_fpn_backbone"
+    "RegNet",
+    "build_regnet_fpn_backbone",
+    "build_retina_regnet_fpn_backbone"
 ]
 
-ShuffleNetV2_cfg = {
-    'shufflenet_v2_x0_5': {'stages_out_channels': [24, 48, 96, 192, 1024], 
-                           'model': models.shufflenet_v2_x0_5, 'weights': models.ShuffleNet_V2_X0_5_Weights.DEFAULT},
-    'shufflenet_v2_x1_0': {'stages_out_channels': [24, 116, 232, 464, 1024], 
-                           'model': models.shufflenet_v2_x1_0, 'weights': models.ShuffleNet_V2_X1_0_Weights.DEFAULT},
-    'shufflenet_v2_x1_5': {'stages_out_channels': [24, 176, 352, 704, 1024], 
-                           'model': models.shufflenet_v2_x1_5, 'weights': models.ShuffleNet_V2_X1_5_Weights.DEFAULT},
-    'shufflenet_v2_x2_0': {'stages_out_channels': [24, 244, 488, 976, 2048], 
-                           'model': models.shufflenet_v2_x2_0, 'weights': models.ShuffleNet_V2_X2_0_Weights.DEFAULT}
+RegNet_cfg = {
+    'regnet_y_800mf': {
+        'stages_out_channels': [64, 144, 320, 784],
+        'model': models.regnet_y_800mf,
+        'weights': models.RegNet_Y_800MF_Weights.DEFAULT,
+    },
+    'regnet_y_1_6gf': {
+        'stages_out_channels': [48, 120, 336, 888],
+        'model': models.regnet_y_1_6gf,
+        'weights': models.RegNet_Y_1_6GF_Weights.DEFAULT,
+    },
 }
 
 
-class ShuffleNetV2(Backbone):
+class RegNet(Backbone):
     """
     Should freeze bn
     """
-    def __init__(self, cfg, model_name="shufflenet_v2_x2_0", freeze_at=0):
-        super(ShuffleNetV2, self).__init__()
-        self._out_features = ["res2", "res3", "res4", "res5"] # cfg.MODEL.RESNETS.OUT_FEATURES
+    def __init__(self, cfg, model_name="regnet_y_800mf", freeze_at=0):
+        super(RegNet, self).__init__()
+        self._out_features = ["res2", "res3", "res4", "res5"]  # cfg.MODEL.RESNETS.OUT_FEATURES
 
-        # keep this simple; your original file hardcoded x1_0 anyway
-        model = None
-        if model_name not in ShuffleNetV2_cfg:
-            raise ValueError("Invalid Shufflenet model")
+        if model_name not in RegNet_cfg:
+            raise ValueError("Invalid RegNet model")
         else:
-            weights = ShuffleNetV2_cfg[model_name]["weights"]
-            model = ShuffleNetV2_cfg[model_name]["model"](weights=weights)
+            weights = RegNet_cfg[model_name]["weights"]
+            model = RegNet_cfg[model_name]["model"](weights=weights)
 
-        self.conv1 = model.conv1
-        self.maxpool = model.maxpool
-        self.stage2 = model.stage2
-        self.stage3 = model.stage3
-        self.stage4 = model.stage4
-        self.conv5 = model.conv5
+        self.stem = model.stem
+        self.s1 = model.trunk_output.block1
+        self.s2 = model.trunk_output.block2
+        self.s3 = model.trunk_output.block3
+        self.s4 = model.trunk_output.block4
 
         # Freeze all BN layers
-        self.conv1 = FrozenBatchNorm2d.convert_frozen_batchnorm(self.conv1)
-        self.stage2 = FrozenBatchNorm2d.convert_frozen_batchnorm(self.stage2)
-        self.stage3 = FrozenBatchNorm2d.convert_frozen_batchnorm(self.stage3)
-        self.stage4 = FrozenBatchNorm2d.convert_frozen_batchnorm(self.stage4)
-        self.conv5 = FrozenBatchNorm2d.convert_frozen_batchnorm(self.conv5)
+        self.stem = FrozenBatchNorm2d.convert_frozen_batchnorm(self.stem)
+        self.s1 = FrozenBatchNorm2d.convert_frozen_batchnorm(self.s1)
+        self.s2 = FrozenBatchNorm2d.convert_frozen_batchnorm(self.s2)
+        self.s3 = FrozenBatchNorm2d.convert_frozen_batchnorm(self.s3)
+        self.s4 = FrozenBatchNorm2d.convert_frozen_batchnorm(self.s4)
 
-        stages_out_channels = ShuffleNetV2_cfg[model_name]["stages_out_channels"]
+        stages_out_channels = RegNet_cfg[model_name]["stages_out_channels"]
         self._out_feature_channels = {
             "res2": stages_out_channels[0],
             "res3": stages_out_channels[1],
             "res4": stages_out_channels[2],
-            "res5": stages_out_channels[4],
+            "res5": stages_out_channels[3],
         }
         self._out_feature_strides = {
             "res2": 4,
@@ -77,36 +82,35 @@ class ShuffleNetV2(Backbone):
 
     def freeze(self, freeze_at=0):
         stages = [
-            self.conv1,
-            self.stage2,
-            self.stage3,
-            self.stage4,
-            self.conv5,
+            self.stem,
+            self.s1,
+            self.s2,
+            self.s3,
+            self.s4,
         ]
         for idx, module in enumerate(stages, start=1):
             if freeze_at >= idx:
                 for p in module.parameters():
                     p.requires_grad = False
 
-
     def forward(self, x):
         outputs = {}
 
-        x = self.conv1(x)
-        x = self.maxpool(x)
+        x = self.stem(x)
+
+        x = self.s1(x)
         if "res2" in self._out_features:
             outputs["res2"] = x
 
-        x = self.stage2(x)
+        x = self.s2(x)
         if "res3" in self._out_features:
             outputs["res3"] = x
 
-        x = self.stage3(x)
+        x = self.s3(x)
         if "res4" in self._out_features:
             outputs["res4"] = x
 
-        x = self.stage4(x)
-        x = self.conv5(x)
+        x = self.s4(x)
         if "res5" in self._out_features:
             outputs["res5"] = x
 
@@ -123,14 +127,14 @@ class ShuffleNetV2(Backbone):
 
 
 @BACKBONE_REGISTRY.register()
-def build_shufflenet_v2_fpn_backbone(cfg, input_shape: ShapeSpec):
+def build_regnet_fpn_backbone(cfg, input_shape: ShapeSpec):
     """
     Args:
         cfg: a detectron2 CfgNode
     Returns:
         backbone (Backbone): backbone module, must be a subclass of :class:`Backbone`.
     """
-    bottom_up = ShuffleNetV2(cfg, freeze_at=cfg.MODEL.BACKBONE.FREEZE_AT)
+    bottom_up = RegNet(cfg, freeze_at=cfg.MODEL.BACKBONE.FREEZE_AT)
     in_features = cfg.MODEL.FPN.IN_FEATURES
     out_channels = cfg.MODEL.FPN.OUT_CHANNELS
     backbone = FPN(
@@ -145,14 +149,14 @@ def build_shufflenet_v2_fpn_backbone(cfg, input_shape: ShapeSpec):
 
 
 @BACKBONE_REGISTRY.register()
-def build_retina_shufflenet_v2_fpn_backbone(cfg, input_shape: ShapeSpec):
+def build_retina_regnet_fpn_backbone(cfg, input_shape: ShapeSpec):
     """
     Args:
         cfg: a detectron2 CfgNode
     Returns:
         backbone (Backbone): backbone module, must be a subclass of :class:`Backbone`.
     """
-    bottom_up = ShuffleNetV2(cfg, freeze_at=cfg.MODEL.BACKBONE.FREEZE_AT)
+    bottom_up = RegNet(cfg, freeze_at=cfg.MODEL.BACKBONE.FREEZE_AT)
     in_features = cfg.MODEL.FPN.IN_FEATURES
     out_channels = cfg.MODEL.FPN.OUT_CHANNELS
     in_channels_top = out_channels
@@ -169,7 +173,7 @@ def build_retina_shufflenet_v2_fpn_backbone(cfg, input_shape: ShapeSpec):
 
 if __name__ == "__main__":
     x = torch.ones(1, 3, 512, 512)
-    model = ShuffleNetV2(None)
+    model = RegNet(None)
     print(model._out_feature_channels)
     outs = model(x)
     for o in outs:
